@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import time
+import math
 
 # ================= 1. PAGE CONFIG & PREVIEW HACK =================
 st.set_page_config(
@@ -10,20 +11,25 @@ st.set_page_config(
 )
 
 # === THE SOCIAL PREVIEW HACK ===
-# We place the logo at the top center so Streamlit's bot captures it as the preview image.
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
     try:
         st.image("page_icon.png", use_container_width=True)
     except Exception:
-        st.warning("⚠️ 'page_icon.png' not found in root folder.")
+        # Fail silently if icon isn't there, or just show a warning
+        # st.warning("⚠️ 'page_icon.png' not found in root folder.")
+        pass
 
 # ================= 2. CONFIGURATION & FUNCTIONS =================
 try:
+    # Ensure these are set in your .streamlit/secrets.toml file
     IG_USER_ID = st.secrets["IG_USER_ID"]
     ACCESS_TOKEN = st.secrets["ACCESS_TOKEN"]
 except FileNotFoundError:
     st.error("Secrets not found! Please configure .streamlit/secrets.toml")
+    st.stop()
+except KeyError as e:
+    st.error(f"Missing secret keys: {e}. Check your secrets.toml.")
     st.stop()
 
 def make_business_discovery_request(user_id, target_username, token, cursor=None):
@@ -31,10 +37,10 @@ def make_business_discovery_request(user_id, target_username, token, cursor=None
     api_url = f"https://graph.facebook.com/v24.0/{user_id}"
     after_param = f".after({cursor})" if cursor else ""
     
-    # We ask for 'view_count' specifically
+    # UPDATED: Added 'thumbnail_url' to the requested fields
     fields_query = (
         f"business_discovery.username({target_username})"
-        f"{{media.limit(25){after_param}{{id,timestamp,caption,media_type,view_count,like_count,permalink}}}}"
+        f"{{media.limit(25){after_param}{{id,timestamp,caption,media_type,view_count,like_count,permalink,thumbnail_url}}}}"
     )
     
     params = {'fields': fields_query, 'access_token': token}
@@ -90,76 +96,72 @@ if st.button("🚀 Calculate Growth", type="primary", use_container_width=True):
     if not target_url or not ig_username:
         st.warning("⚠️ Please fill in both fields.")
     else:
+        # Initialize variables
         grand_total = 0
         count_posts = 0
         found_target = False
         next_cursor = None
         has_next_page = True
-        
-        # UI Elements for results
-        status_box = st.status("Scanning your feed...", expanded=True)
-        results_container = st.container()
+        scanned_reels = []
         clean_target = target_url.split('?')[0]
         
-        # List to store reel data for the summary table
-        scanned_reels = []
-
-        # --- LOOP START ---
-        while has_next_page and not found_target:
-            data = make_business_discovery_request(IG_USER_ID, ig_username, ACCESS_TOKEN, next_cursor)
-            
-            if 'error' in data:
-                status_box.update(label="❌ API Error", state="error")
-                st.error(data['error'].get('message'))
-                break
+        # Wrap the calculation in a spinner instead of the active status box
+        with st.spinner("Fetching data and calculating views... please wait."):
+            # --- LOOP START ---
+            while has_next_page and not found_target:
+                data = make_business_discovery_request(IG_USER_ID, ig_username, ACCESS_TOKEN, next_cursor)
                 
-            try:
-                media_list = data.get('business_discovery', {}).get('media', {})
-                posts = media_list.get('data', [])
-                paging = media_list.get('paging', {})
-            except AttributeError:
-                status_box.update(label="❌ Data Error", state="error")
-                st.error("Could not parse data. Check username.")
-                break
-
-            for post in posts:
-                clean_permalink = post.get('permalink', '').split('?')[0]
-                
-                # STOP CONDITION
-                if clean_target in clean_permalink:
-                    found_target = True
-                    status_box.update(label=f"✅ Found stopping point: {post.get('caption', '')[:20]}...", state="complete")
+                if 'error' in data:
+                    st.error(f"API Error: {data['error'].get('message')}")
                     break
-                
-                # COUNTING LOGIC
-                if post.get('media_type') == 'VIDEO':
-                    views = post.get('view_count', 0)
-                    likes = post.get('like_count', 0)
-                    grand_total += views
-                    count_posts += 1
                     
-                    # Store for display
-                    scanned_reels.append({
-                        "Date": post.get('timestamp')[:10],
-                        "Views": views,
-                        "Likes": likes,
-                        "Caption": post.get('caption', 'No Caption')[:40] + "...",
-                        "Link": post.get('permalink')
-                    })
+                try:
+                    media_list = data.get('business_discovery', {}).get('media', {})
+                    posts = media_list.get('data', [])
+                    paging = media_list.get('paging', {})
+                except AttributeError:
+                    st.error("Could not parse data. Check username.")
+                    break
+
+                for post in posts:
+                    clean_permalink = post.get('permalink', '').split('?')[0]
                     
-                    # Update status slightly
-                    status_box.write(f"Scanned: {views:,} views ({post.get('timestamp')[:10]})")
+                    # STOP CONDITION
+                    if clean_target in clean_permalink:
+                        found_target = True
+                        # Scanning stops here
+                        break
+                    
+                    # COUNTING LOGIC
+                    if post.get('media_type') == 'VIDEO':
+                        views = post.get('view_count', 0)
+                        likes = post.get('like_count', 0)
+                        # Get thumbnail URL (some older reels might not have it readily available)
+                        thumb_url = post.get('thumbnail_url')
 
-            # PAGINATION
-            if not found_target:
-                if 'cursors' in paging and 'after' in paging['cursors']:
-                    next_cursor = paging['cursors']['after']
-                    time.sleep(0.1)
-                else:
-                    has_next_page = False
-                    status_box.update(label="⚠️ End of Feed Reached", state="complete")
+                        grand_total += views
+                        count_posts += 1
+                        
+                        # Store data for display later
+                        scanned_reels.append({
+                            "Date": post.get('timestamp')[:10],
+                            "Views": views,
+                            "Likes": likes,
+                            "Caption": post.get('caption', 'No Caption'),
+                            "Link": post.get('permalink'),
+                            "Thumbnail": thumb_url
+                        })
+                        
+                # PAGINATION
+                if not found_target:
+                    if 'cursors' in paging and 'after' in paging['cursors']:
+                        next_cursor = paging['cursors']['after']
+                        time.sleep(0.1) # Small politeness delay
+                    else:
+                        has_next_page = False
+                        # End of feed reached without finding target
 
-        # --- FINAL DISPLAY ---
+        # --- FINAL DISPLAY (After spinner finishes) ---
         st.divider()
         
         if scanned_reels:
@@ -169,14 +171,38 @@ if st.button("🚀 Calculate Growth", type="primary", use_container_width=True):
             
             st.divider()
             
-            # 2. DETAILED LIST
-            st.subheader(f"📜 Reels Included in Count ({count_posts})")
+            # 2. THUMBNAIL GRID DISPLAY
+            st.subheader(f"🎞️ Reels Included in Count ({count_posts})")
             
-            for reel in scanned_reels:
-                with st.expander(f"👁️ {reel['Views']:,} | 📅 {reel['Date']}"):
-                    st.write(f"**Caption:** {reel['Caption']}")
-                    st.write(f"**Likes:** {reel['Likes']}")
-                    st.markdown(f"[Watch on Instagram]({reel['Link']})")
+            # Grid Configuration
+            cols_per_row = 3
+            num_rows = math.ceil(len(scanned_reels) / cols_per_row)
+            
+            reel_index = 0
+            for _ in range(num_rows):
+                cols = st.columns(cols_per_row)
+                for col in cols:
+                    if reel_index < len(scanned_reels):
+                        reel = scanned_reels[reel_index]
+                        with col:
+                            st.container(border=True)
+                            # Display Thumbnail if available
+                            if reel['Thumbnail']:
+                                st.image(reel['Thumbnail'], use_container_width=True)
+                            else:
+                                # Fallback if no thumbnail url returned
+                                st.warning("No Preview")
+                                
+                            st.markdown(f"**👁️ {reel['Views']:,}**")
+                            st.caption(f"📅 {reel['Date']}")
+                            
+                            with st.popover("Details"):
+                                st.caption(reel['Caption'][:100] + "...")
+                                st.markdown(f"❤️ Likes: {reel['Likes']:,}")
+                                st.markdown(f"[Watch on Instagram]({reel['Link']})")
+                        reel_index += 1
                     
         elif not found_target and count_posts == 0:
-             st.warning("No reels found or target URL is the most recent post.")
+             st.warning("No reels found newer than the target URL, or the target URL is your most recent post.")
+        elif found_target and count_posts == 0:
+             st.info("The target URL is your latest reel. 0 views gained since then.")

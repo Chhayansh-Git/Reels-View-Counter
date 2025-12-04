@@ -36,7 +36,7 @@ def make_business_discovery_request(user_id, target_username, token, cursor=None
     return response.json()
 
 # ================= UI LAYOUT =================
-st.set_page_config(page_title="🎬Reel View Counter", page_icon="🎬")
+st.set_page_config(page_title="Reel View Counter", page_icon="🎬")
 
 st.title("🎬Reel View Counter")
 st.markdown("This version uses **Business Discovery** and reads the **'view_count'** field.")
